@@ -1,0 +1,580 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  ProofAfterPickup - Production-Grade AWS SAM Serverless Infrastructure for Post-Pickup
+  & Delivery Proof Verification. Features Single-Table DynamoDB (ProofAfterPickup-Lots),
+  Tamper-Evident Cryptographic SHA-256 Hash-Chain Audit Ledger (PAP-Audit-Ledger),
+  DynamoDB Streams S3 Archiving, EventBridge & SQS Exception Pipeline, and Cognito RBAC.
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.12
+    Tracing: Active
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref ProofAfterPickupLotsTable
+        LEDGER_TABLE_NAME: !Ref PAPAuditLedgerTable
+        BUCKET_NAME: !Ref EvidenceBucket
+        AUDIT_ARCHIVE_BUCKET_NAME: !Ref AuditArchiveBucket
+        EVENT_BUS_NAME: default
+        EXCEPTION_QUEUE_URL: !Ref ExceptionQueue
+        POWERTOOLS_SERVICE_NAME: ProofAfterPickup
+        LOG_LEVEL: INFO
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Deployment stage environment.
+
+Resources:
+  # =========================================================================
+  # 1. SINGLE-TABLE DYNAMODB WITH STREAMS ENABLED (NEW_AND_OLD_IMAGES)
+  # =========================================================================
+  ProofAfterPickupLotsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ProofAfterPickup-Lots
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      SSESpecification:
+        SSEEnabled: true
+
+  # =========================================================================
+  # 2. TAMPER-EVIDENT Cryptographic Hash-Chain Ledger DynamoDB Table
+  # =========================================================================
+  PAPAuditLedgerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: PAP-Audit-Ledger
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: lotId
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: N
+      KeySchema:
+        - AttributeName: lotId
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      SSESpecification:
+        SSEEnabled: true
+
+  # =========================================================================
+  # 3. S3 BUCKETS (EVIDENCE & IMMUTABLE AUDIT ARCHIVE)
+  # =========================================================================
+  EvidenceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'proofafterpickup-evidence-${Stage}-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST, HEAD]
+            AllowedOrigins: ['*']
+            MaxAge: 3600
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  AuditArchiveBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'pap-audit-archive-bucket-${Stage}-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  ExceptionAudioBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: pap-exception-audio-bucket
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST, HEAD]
+            AllowedOrigins: ['*']
+            MaxAge: 3600
+      ObjectLockEnabled: true
+
+  # =========================================================================
+  # 4. COGNITO USER POOL & 4 GROUPS (Society, Collector, Receiver, Supervisor)
+  # =========================================================================
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub 'proofafterpickup-users-${Stage}'
+      AutoVerifiedAttributes: [email]
+      UsernameAttributes: [email]
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub 'proofafterpickup-client-${Stage}'
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+
+  CognitoGroupSociety:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Society
+      UserPoolId: !Ref CognitoUserPool
+
+  CognitoGroupCollector:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Collector
+      UserPoolId: !Ref CognitoUserPool
+
+  CognitoGroupReceiver:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Receiver
+      UserPoolId: !Ref CognitoUserPool
+
+  CognitoGroupSupervisor:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Supervisor
+      UserPoolId: !Ref CognitoUserPool
+
+  # =========================================================================
+  # 5. HTTP API GATEWAY WITH COGNITO AUTHORIZER
+  # =========================================================================
+  HttpApiGateway:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref Stage
+      CorsConfiguration:
+        AllowMethods: ['GET', 'POST', 'PUT', 'OPTIONS']
+        AllowHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key']
+        AllowOrigins: ['*']
+      Auth:
+        DefaultAuthorizer: CognitoJwtAuthorizer
+        Authorizers:
+          CognitoJwtAuthorizer:
+            AuthorizationScopes:
+              - openid
+            JwtConfiguration:
+              issuer: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPool}'
+              audience:
+                - !Ref CognitoUserPoolClient
+
+  # =========================================================================
+  # 6. SQS QUEUE & EVENTBRIDGE RULE FOR EXCEPTION HANDLING
+  # =========================================================================
+  ExceptionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'proofafterpickup-exceptions-${Stage}.fifo'
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      KmsMasterKeyId: alias/aws/sqs
+
+  ExceptionEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub 'proofafterpickup-exception-rule-${Stage}'
+      Description: Routes lot exceptions (weight mismatch >10% or contamination) to SQS.
+      EventPattern:
+        source:
+          - 'proofafterpickup.service'
+        detail-type:
+          - 'LotExceptionDetected'
+      Targets:
+        - Arn: !GetAtt ExceptionQueue.Arn
+          Id: 'ExceptionSQSTarget'
+          SqsParameters:
+            MessageGroupId: 'LotExceptions'
+
+  # =========================================================================
+  # 7. LAMBDA FUNCTIONS (LEAST-PRIVILEGE IAM POLICIES)
+  # =========================================================================
+
+  CreateLotFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/create_lot/
+      Handler: app.lambda_handler
+      Description: Creates new Lot item in DynamoDB. Strict write-only IAM policy.
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt ProofAfterPickupLotsTable.Arn
+      Events:
+        CreateLotApi:
+          Type: HttpApi
+          Properties:
+            Path: /lots
+            Method: post
+            ApiId: !Ref HttpApiGateway
+
+  ClaimPickupFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/claim_pickup/
+      Handler: app.lambda_handler
+      Description: Collector claims lot using Haversine 200m geofence proximity check and GeoFencingViolation exception.
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt ProofAfterPickupLotsTable.Arn
+      Events:
+        ClaimPickupApi:
+          Type: HttpApi
+          Properties:
+            Path: /lots/{id}/claim
+            Method: put
+            ApiId: !Ref HttpApiGateway
+
+  ConfirmReceiptFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/confirm_receipt/
+      Handler: app.lambda_handler
+      Description: Receiver verifies lot receipt, calculates weight delta & contamination. Emits exception event if needed.
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt ProofAfterPickupLotsTable.Arn
+            - Effect: Allow
+              Action:
+                - events:PutEvents
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub '${EvidenceBucket.Arn}/*'
+      Events:
+        ConfirmReceiptApi:
+          Type: HttpApi
+          Properties:
+            Path: /lots/{id}/confirm
+            Method: post
+            ApiId: !Ref HttpApiGateway
+
+  GeneratePresignedPostFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/generate_presigned_post/
+      Handler: app.lambda_handler
+      Description: Generates 5-minute S3 Pre-signed POST URLs for contamination photographic evidence linked to lotId.
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub '${EvidenceBucket.Arn}/*'
+      Events:
+        PresignPostApi:
+          Type: HttpApi
+          Properties:
+            Path: /lots/{id}/evidence-presign
+            Method: post
+            ApiId: !Ref HttpApiGateway
+
+  VoiceExceptionNoteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/voice_exception_note/
+      Handler: app.lambda_handler
+      Description: Converts Tamil/English audio to text via Amazon Transcribe and attaches audio URL & transcript to lot exception record.
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt ProofAfterPickupLotsTable.Arn
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:GetObject
+              Resource: !Sub '${EvidenceBucket.Arn}/*'
+            - Effect: Allow
+              Action:
+                - transcribe:StartTranscriptionJob
+                - transcribe:GetTranscriptionJob
+              Resource: '*'
+      Events:
+        VoiceNoteApi:
+          Type: HttpApi
+          Properties:
+            Path: /lots/{id}/voice-note
+            Method: post
+            ApiId: !Ref HttpApiGateway
+
+  CpcbEprManifestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/cpcb_epr_manifest_generator/
+      Handler: app.lambda_handler
+      Description: Queries PROCESSOR_ACCEPTED lots within date range, categorizes weights into CPCB Categories I-III, generates CSV report in /tmp, uploads to S3, and returns temporary Pre-signed download URL.
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Scan
+                - dynamodb:Query
+              Resource: !GetAtt ProofAfterPickupLotsTable.Arn
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:GetObject
+              Resource: !Sub '${EvidenceBucket.Arn}/*'
+      Events:
+        EprManifestApi:
+          Type: HttpApi
+          Properties:
+            Path: /epr-manifest/generate
+            Method: post
+            ApiId: !Ref HttpApiGateway
+
+  # 8. AuditLedgerStreamProcessor: Tamper-Evident SHA-256 Ledger Processor
+  AuditLedgerStreamProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/audit_ledger_stream_processor/
+      Handler: app.lambda_handler
+      Description: Triggered by DynamoDB Streams on ProofAfterPickup-Lots. Computes cryptographic SHA-256 hash chains (payload + previous_hash) and writes to PAP-Audit-Ledger.
+      Environment:
+        Variables:
+          LEDGER_TABLE_NAME: !Ref PAPAuditLedgerTable
+          GENESIS_HASH: 'GENESIS_BLOCK_0000000000000000000000000000000000000000000000000000'
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:PutItem
+              Resource: !GetAtt PAPAuditLedgerTable.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:GetRecords
+                - dynamodb:GetShardIterator
+                - dynamodb:DescribeStream
+                - dynamodb:ListStreams
+              Resource: !GetAtt ProofAfterPickupLotsTable.StreamArn
+      Events:
+        DynamoDBStreamEvent:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt ProofAfterPickupLotsTable.StreamArn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 100
+            MaximumBatchingWindowInSeconds: 10
+
+  # 9. AuditStreamProcessor: S3 Archiver
+  AuditStreamProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/audit_stream_processor/
+      Handler: app.lambda_handler
+      Description: Consumes DynamoDB Streams from ProofAfterPickup-Lots and writes immutable JSON line audit records to S3.
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub '${AuditArchiveBucket.Arn}/*'
+      Events:
+        DynamoDBStreamEvent:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt ProofAfterPickupLotsTable.StreamArn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 100
+            MaximumBatchingWindowInSeconds: 10
+
+  ExceptionProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/exception_processor/
+      Handler: app.lambda_handler
+      Description: Handles EventBridge exception events and writes to SQS FIFO queue.
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !GetAtt ExceptionQueue.Arn
+      Events:
+        EventBridgeTrigger:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - 'proofafterpickup.service'
+              detail-type:
+                - 'LotExceptionDetected'
+
+  NotificationProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/notification_processor/
+      Handler: app.lambda_handler
+      Description: Consumes SQS exception messages and triggers supervisor alerts.
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+              Resource: !GetAtt ExceptionQueue.Arn
+      Events:
+        SQSQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ExceptionQueue.Arn
+            BatchSize: 5
+
+  # 10. ProcessVoiceException & Transcribe Handler
+  ProcessVoiceExceptionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/process_voice_exception/
+      Handler: app.lambda_handler
+      Description: Receives Base64 audio, saves as .webm or .mp4 in pap-exception-audio-bucket S3, and starts asynchronous Amazon Transcribe job with Tamil/English language identification.
+      Environment:
+        Variables:
+          AUDIO_BUCKET_NAME: !Ref ExceptionAudioBucket
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:GetObject
+              Resource: !Sub '${ExceptionAudioBucket.Arn}/*'
+            - Effect: Allow
+              Action:
+                - transcribe:StartTranscriptionJob
+              Resource: '*'
+      Events:
+        VoiceExceptionApi:
+          Type: HttpApi
+          Properties:
+            Path: /lots/{id}/voice-exception
+            Method: post
+            ApiId: !Ref HttpApiGateway
+
+  TranscribeJobCompletionHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/transcribe_completion_handler/
+      Handler: app.lambda_handler
+      Description: Triggered by EventBridge when Amazon Transcribe job state is COMPLETED. Attaches exception_note and audio_proof_link to ProofAfterPickup-Lots DynamoDB table.
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+                - dynamodb:GetItem
+              Resource: !GetAtt ProofAfterPickupLotsTable.Arn
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub '${ExceptionAudioBucket.Arn}/*'
+      Events:
+        TranscribeJobCompletedRule:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - 'aws.transcribe'
+              detail-type:
+                - 'Transcribe Job State Change'
+              detail:
+                TranscriptionJobStatus:
+                  - 'COMPLETED'
+
+Outputs:
+  HttpApiUrl:
+    Description: HTTP API Gateway endpoint URL
+    Value: !Sub 'https://${HttpApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/'
+  CognitoUserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref CognitoUserPool
+  CognitoClientId:
+    Description: Cognito App Client ID
+    Value: !Ref CognitoUserPoolClient
+  DynamoDBTableName:
+    Description: Single DynamoDB Table Name
+    Value: !Ref ProofAfterPickupLotsTable
+  PAPAuditLedgerTableName:
+    Description: Tamper-Evident Cryptographic SHA-256 Audit Ledger Table Name
+    Value: !Ref PAPAuditLedgerTable
+  DynamoDBStreamArn:
+    Description: DynamoDB Table Stream ARN
+    Value: !GetAtt ProofAfterPickupLotsTable.StreamArn
+  S3EvidenceBucketName:
+    Description: Private S3 Evidence Bucket Name
+    Value: !Ref EvidenceBucket
+  S3AuditArchiveBucketName:
+    Description: S3 Audit Archive Bucket Name (JSON Lines)
+    Value: !Ref AuditArchiveBucket
+  SQSQueueUrl:
+    Description: SQS Exception Queue URL
+    Value: !Ref ExceptionQueue

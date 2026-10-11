@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <script>
+      // Gracefully capture and suppress WebSocket HMR disconnect notices when running in dev iframe
+      window.addEventListener('unhandledrejection', function(event) {
+        if (event.reason && (
+          (typeof event.reason === 'string' && event.reason.includes('WebSocket')) ||
+          (event.reason.message && event.reason.message.includes('WebSocket'))
+        )) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      });
+      window.addEventListener('error', function(event) {
+        if (event.message && event.message.includes('WebSocket')) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      }, true);
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>ProofAfterPickup — Single-Table AWS SAM & PWA Verification Platform</title>
+    <meta name="description" content="Production-grade PWA and AWS SAM serverless platform for post-pickup verification, single-table DynamoDB, and Cognito RBAC." />
+    <meta property="og:title" content="ProofAfterPickup — Single-Table AWS SAM & PWA Verification Platform" />
+    <meta property="og:description" content="Production-grade PWA and AWS SAM serverless platform for post-pickup verification, single-table DynamoDB, and Cognito RBAC." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ProofAfterPickup" />
+    <link rel="apple-touch-icon" href="/pwa-192x192.png" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  </head>
+  <body class="bg-slate-950 text-slate-100 antialiased selection:bg-amber-500/30 selection:text-amber-200">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

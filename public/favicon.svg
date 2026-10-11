@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="128" fill="#0F172A"/>
+  <path d="M256 64L416 144V288C416 384 256 448 256 448C256 448 96 384 96 288V144L256 64Z" fill="#1E293B" stroke="#FF9900" stroke-width="16" stroke-linejoin="round"/>
+  <!-- Package Box Inside Shield -->
+  <path d="M256 160L336 200V280L256 320L176 280V200L256 160Z" fill="#334155" stroke="#FF9900" stroke-width="10"/>
+  <path d="M256 160V320" stroke="#FF9900" stroke-width="8"/>
+  <path d="M176 200L256 240L336 200" stroke="#FF9900" stroke-width="8"/>
+  <!-- Checkmark -->
+  <circle cx="340" cy="320" r="48" fill="#10B981"/>
+  <path d="M320 320L334 334L360 306" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

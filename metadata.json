@@ -1,0 +1,6 @@
+{
+  "name": "ProofAfterPickup — Single-Table AWS SAM & PWA Verification Platform",
+  "description": "Production-grade PWA and AWS SAM serverless platform for post-pickup verification, single-table DynamoDB, and Cognito RBAC.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
